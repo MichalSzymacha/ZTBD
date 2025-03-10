@@ -14,7 +14,12 @@ services:
             - "9042:9042"
         volumes:
             - cassandra_data:/var/lib/cassandra
-            - ./cassandra-init:/cassandra-init # Katalog z plikami CQL
+            - ./init-cassandra.cql:/init-cassandra.cql
+        healthcheck:
+            test: ["CMD", "cqlsh", "-e", "describe keyspaces"]
+            interval: 30s
+            timeout: 10s
+            retries: 5
 
     cassandra-web:
         image: ipushc/cassandra-web
@@ -23,19 +28,20 @@ services:
         environment:
             CASSANDRA_CONTACT_POINTS: cassandra
         ports:
-            - "3000:3000"
+            - "8083:8083"
         depends_on:
             - cassandra
 
     cqlsh:
-        image: instaclustr/cassandra-cqlsh
+        image: cassandra:latest # Zmieniono obraz na oficjalny Cassandra
         container_name: cassandra_cqlsh
         depends_on:
             - cassandra
         volumes:
-            - ./cassandra-init:/cassandra-init
-        entrypoint: /bin/sh -c "sleep 30 && for file in /cassandra-init/*.cql; do echo Running $file && cqlsh cassandra -f $file; done"
+            - ./init-cassandra.cql:/init-cassandra.cql
+        entrypoint: /bin/sh -c "sleep 30 && for file in /init-cassandra.cql; do echo Running $$file && cqlsh cassandra -f $$file; done"
 
 volumes:
     cassandra_data:
         driver: local
+
