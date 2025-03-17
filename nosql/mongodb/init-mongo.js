@@ -10,7 +10,13 @@ db.createCollection("pracownicy");
 // Kolekcja typ_nadwozia – zawiera typy nadwozi
 db.createCollection("typ_nadwozia");
 
-// Kolekcja pojazdy – osadza typ nadwozia
+// Kolekcja marki – zawiera marki pojazdów
+db.createCollection("marki");
+
+// Kolekcja modele – zawiera modele pojazdów, odnosząc się do marek
+db.createCollection("modele");
+
+// Kolekcja pojazdy – odnosi się do modelu i osadza typ nadwozia
 db.createCollection("pojazdy");
 
 // Kolekcja wypozyczenia – osadza klienta, pojazd i pracownika
@@ -26,6 +32,28 @@ db.createCollection("platnosci");
 db.createCollection("serwis");
 
 // Przykładowe dane
+db.marki.insertMany([
+    { 
+        _id: UUID(),
+        nazwa: "Toyota" 
+    },
+    { 
+        _id: UUID(), 
+        nazwa: "BMW" 
+    },
+]);
+
+db.modele.insertMany([
+    { 
+        _id: UUID(), 
+        id_marki: (db.marki.findOne({ nazwa: "Toyota" }))._id, nazwa: "Corolla" 
+    },
+    { 
+        _id: UUID(), 
+        id_marki: (db.marki.findOne({ nazwa: "BMW" }))._id, nazwa: "X5" 
+    }
+]);
+
 db.klienci.insertMany([
     {
         id_klienta: UUID(),
@@ -43,8 +71,7 @@ db.klienci.insertMany([
 db.pojazdy.insertMany([
     {
         id_pojazdu: UUID(),
-        marka: "Toyota",
-        model: "Corolla",
+        id_modelu: (db.modele.findOne({ nazwa: "Corolla" }))._id,
         przebieg: 50000.0,
         rok_produkcji: 2020,
         kolor_nadwozia: "biały",

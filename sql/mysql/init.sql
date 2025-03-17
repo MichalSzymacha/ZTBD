@@ -33,11 +33,24 @@ CREATE TABLE typ_nadwozia (
     rodzaj_nadwozia   TEXT NOT NULL
 );
 
+-- Tabela MARKI
+CREATE TABLE marki (
+    id_marki INT PRIMARY KEY AUTO_INCREMENT,
+    nazwa VARCHAR(50) NOT NULL UNIQUE
+);
+
+-- Tabela MODELE
+CREATE TABLE modele (
+    id_modelu INT PRIMARY KEY AUTO_INCREMENT,
+    id_marki INT NOT NULL,
+    nazwa VARCHAR(50) NOT NULL,
+    FOREIGN KEY (id_marki) REFERENCES marki(id_marki) ON DELETE CASCADE
+);
+
 -- Tabela POJAZDY
 CREATE TABLE pojazdy (
     id_pojazdu        INT PRIMARY KEY AUTO_INCREMENT,
-    marka             TEXT NOT NULL,
-    model             TEXT NOT NULL,
+    id_modelu         INT NOT NULL,
     przebieg          FLOAT,
     rok_produkcji     YEAR,
     kolor_nadwozia    TEXT,
@@ -48,10 +61,12 @@ CREATE TABLE pojazdy (
     cena_24h          FLOAT NOT NULL,
     kaucja            FLOAT NOT NULL,
     moc               INT,
-    id_nadwozia       INT,
+    id_nadwozia       INT NOT NULL,
     dostepnosc        VARCHAR(3) CHECK (dostepnosc IN ('tak', 'nie')),
+    FOREIGN KEY (id_modelu) REFERENCES modele(id_modelu) ON DELETE CASCADE,
     FOREIGN KEY (id_nadwozia) REFERENCES typ_nadwozia(id_nadwozia)
 );
+
 
 -- Tabela WYPOŻYCZENIA
 CREATE TABLE wypozyczenia (

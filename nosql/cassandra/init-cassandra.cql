@@ -36,11 +36,23 @@ CREATE TABLE IF NOT EXISTS typ_nadwozia (
     rodzaj_nadwozia text
 );
 
+-- Tabela marki
+CREATE TABLE IF NOT EXISTS marki (
+    id_marki uuid PRIMARY KEY,
+    nazwa text
+);
+
+-- Tabela modele
+CREATE TABLE IF NOT EXISTS modele (
+    id_modelu uuid PRIMARY KEY,
+    id_marki uuid,
+    nazwa text
+);
+
 -- Tabela pojazdy
 CREATE TABLE IF NOT EXISTS pojazdy (
     id_pojazdu uuid PRIMARY KEY,
-    marka text,
-    model text,
+    id_modelu uuid,
     przebieg float,
     rok_produkcji int,
     kolor_nadwozia text,

@@ -34,23 +34,37 @@ CREATE TABLE IF NOT EXISTS typ_nadwozia (
     rodzaj_nadwozia   TEXT NOT NULL
 );
 
+-- Tabela MARKI
+CREATE TABLE IF NOT EXISTS marki (
+    id_marki SERIAL PRIMARY KEY,
+    nazwa TEXT UNIQUE NOT NULL
+);
+
+-- Tabela MODELE
+CREATE TABLE IF NOT EXISTS modele (
+    id_modelu SERIAL PRIMARY KEY,
+    id_marki INT NOT NULL,
+    nazwa TEXT NOT NULL,
+    FOREIGN KEY (id_marki) REFERENCES marki(id_marki) ON DELETE CASCADE
+);
+
 -- Tabela POJAZDY
 CREATE TABLE IF NOT EXISTS pojazdy (
-    id_pojazdu        SERIAL PRIMARY KEY,
-    marka             TEXT NOT NULL,
-    model             TEXT NOT NULL,
-    przebieg          FLOAT,
-    rok_produkcji     INT,
-    kolor_nadwozia    TEXT,
-    kolor_wnetrza     TEXT,
-    skrzynia_biegow   TEXT CHECK (skrzynia_biegow IN ('manualna', 'automatyczna')),
-    paliwo            TEXT CHECK (paliwo IN ('benzyna', 'diesel', 'hybryda', 'elektryczny')),
+    id_pojazdu SERIAL PRIMARY KEY,
+    id_modelu INT NOT NULL,
+    przebieg FLOAT,
+    rok_produkcji INT,
+    kolor_nadwozia TEXT,
+    kolor_wnetrza TEXT,
+    skrzynia_biegow TEXT CHECK (skrzynia_biegow IN ('manualna', 'automatyczna')),
+    paliwo TEXT CHECK (paliwo IN ('benzyna', 'diesel', 'hybryda', 'elektryczny')),
     pojemnosc_silnika FLOAT,
-    cena_24h          FLOAT NOT NULL,
-    kaucja            FLOAT NOT NULL,
-    moc               INT,
-    id_nadwozia       INT,
-    dostepnosc        VARCHAR(3) CHECK (dostepnosc IN ('tak', 'nie')),
+    cena_24h FLOAT NOT NULL,
+    kaucja FLOAT NOT NULL,
+    moc INT,
+    id_nadwozia INT NOT NULL,
+    dostepnosc VARCHAR(3) CHECK (dostepnosc IN ('tak', 'nie')),
+    FOREIGN KEY (id_modelu) REFERENCES modele(id_modelu) ON DELETE CASCADE,
     FOREIGN KEY (id_nadwozia) REFERENCES typ_nadwozia(id_nadwozia)
 );
 
