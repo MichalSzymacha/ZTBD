@@ -7,15 +7,17 @@ from faker import Faker
 # Importy dla baz danych
 import mysql.connector
 import psycopg2
+import gevent.monkey
+gevent.monkey.patch_all()
+from cassandra.io.geventreactor import GeventConnection
 from cassandra.cluster import Cluster
 from pymongo import MongoClient
 
 fake = Faker("pl_PL")  # używamy polskiej lokalizacji
+
 # Ilość rekordów do wygenerowania – możesz zmodyfikować ilości
 NUM_KLIENCI = 10
 NUM_PRACOWNICY = 5
-NUM_MARKI = 3
-NUM_MODELI_PER_MARKA = 2
 NUM_POJAZDY = 10
 NUM_WYPOZYCZENIA = 5
 NUM_REZERWACJE = 5
@@ -25,6 +27,15 @@ NUM_SERWIS = 5
 BODY_TYPES = ["sedan", "hatchback", "SUV", "coupe"]
 GEARBOXES = ["manualna", "automatyczna"]
 FUEL_TYPES = ["benzyna", "diesel", "elektryczny"]
+
+# Zamiast osobnych list marek i modeli – użyjemy słownika odwzorowującego markę → dostępne modele
+brand_to_models = {
+    "Toyota": ["Corolla", "Camry", "Yaris"],
+    "Volkswagen": ["Golf", "Passat", "Polo"],
+    "Ford": ["Focus", "Fiesta", "Mustang"],
+    "BMW": ["3er", "5er", "X5"],
+    "Audi": ["A4", "A6", "Q5"],
+}
 
 # --------------------------------------------
 # Generowanie danych przykładowych (wspólnych)
@@ -39,10 +50,8 @@ def generate_klienci():
             "imie": fake.first_name(),
             "nazwisko": fake.last_name(),
             "telefon": fake.phone_number(),
-            "data_urodzenia": fake.date_of_birth(
-                minimum_age=18, maximum_age=80
-            ).isoformat(),
-            "pesel": "".join([str(random.randint(0, 9)) for _ in range(11)]),
+            "data_urodzenia": fake.date_of_birth(minimum_age=18, maximum_age=80).isoformat(),
+            "pesel": "".join(str(random.randint(0, 9)) for _ in range(11)),
             "adres": fake.street_address(),
             "kod_pocztowy": fake.postcode(),
             "miasto": fake.city(),
@@ -73,31 +82,37 @@ def generate_typ_nadwozia():
     return typy
 
 
-def generate_marki():
+def generate_marki_modele():
+    """
+    Tworzymy listę marek i listę modeli tak, aby każdy model był przypisany do
+    konkretnej marki. Zamiast losowania marek czy modeli z Faker, używamy
+    z góry zdefiniowanego słownika brand_to_models.
+    """
     marki = []
-    for _ in range(NUM_MARKI):
-        marka = {
-            "_id": str(uuid.uuid4()),
-            "nazwa": fake.company()[:10],  # skrócone nazwy
-        }
-        marki.append(marka)
-    return marki
-
-
-def generate_modele(marki):
     modele = []
-    for marka in marki:
-        for _ in range(NUM_MODELI_PER_MARKA):
-            model = {
-                "_id": str(uuid.uuid4()),
-                "id_marki": marka["_id"],
-                "nazwa": fake.word().capitalize(),
-            }
-            modele.append(model)
-    return modele
+    for brand, models_list in brand_to_models.items():
+        marka_id = str(uuid.uuid4())
+        # Tworzymy obiekt reprezentujący markę
+        marki.append({
+            "_id": marka_id,
+            "nazwa": brand
+        })
+        # Dla każdej z marek tworzymy powiązane modele
+        for model_name in models_list:
+            model_id = str(uuid.uuid4())
+            modele.append({
+                "_id": model_id,
+                "id_marki": marka_id,
+                "nazwa": model_name
+            })
+    return marki, modele
 
 
 def generate_pojazdy(modele):
+    """
+    Generujemy pojazdy, przy czym każdy pojazd losowo wybiera z dostępnej listy modeli.
+    Marka zostanie przypisana dopiero w assign_marka_model, na podstawie id_modelu.
+    """
     pojazdy = []
     for _ in range(NUM_POJAZDY):
         model = random.choice(modele)
@@ -140,7 +155,7 @@ def generate_wypozyczenia(klienci, pojazdy, pracownicy):
             },
             "pojazd": {
                 "id_pojazdu": pojazd["id_pojazdu"],
-                "marka": None,  # wstawimy przy pobieraniu marki/modelu – uprościmy poniżej
+                "marka": None,  # uzupełniane później
                 "model": None,
                 "przebieg": pojazd["przebieg"],
             },
@@ -181,18 +196,10 @@ def generate_rezerwacje(klienci, pojazdy, pracownicy):
                 "imie": pracownik["imie"],
                 "nazwisko": pracownik["nazwisko"],
             },
-            "data_rezerwacji": fake.date_time_between(
-                start_date="-1y", end_date="now"
-            ).isoformat(),
-            "data_od": fake.date_time_between(
-                start_date="now", end_date="+1y"
-            ).isoformat(),
-            "data_do": fake.date_time_between(
-                start_date="now", end_date="+1y"
-            ).isoformat(),
-            "status_rezerwacji": random.choice(
-                ["oczekuje", "zatwierdzona", "odrzucona"]
-            ),
+            "data_rezerwacji": fake.date_time_between(start_date="-1y", end_date="now").isoformat(),
+            "data_od": fake.date_time_between(start_date="now", end_date="+1y").isoformat(),
+            "data_do": fake.date_time_between(start_date="now", end_date="+1y").isoformat(),
+            "status_rezerwacji": random.choice(["oczekuje", "zatwierdzona", "odrzucona"]),
         }
         rezerwacje.append(rezerwacja)
     return rezerwacje
@@ -219,9 +226,7 @@ def generate_platnosci(wypozyczenia):
             },
             "kwota": round(random.uniform(50, 1000), 2),
             "typ_platnosci": random.choice(["karta kredytowa", "przelew", "gotówka"]),
-            "data_platnosci": fake.date_time_between(
-                start_date="-1y", end_date="now"
-            ).isoformat(),
+            "data_platnosci": fake.date_time_between(start_date="-1y", end_date="now").isoformat(),
             "opis": fake.sentence(nb_words=6),
         }
         platnosci.append(platnosc)
@@ -239,9 +244,7 @@ def generate_serwis(pojazdy):
                 "marka": None,
                 "model": None,
             },
-            "data_serwisu": fake.date_time_between(
-                start_date="-1y", end_date="now"
-            ).isoformat(),
+            "data_serwisu": fake.date_time_between(start_date="-1y", end_date="now").isoformat(),
             "opis": fake.sentence(nb_words=8),
             "koszt": round(random.uniform(100, 1000), 2),
         }
@@ -249,31 +252,41 @@ def generate_serwis(pojazdy):
     return serwis
 
 
-# Dla uproszczenia – przyjmujemy, że marka i model pojazdu ustalimy wstawiając nazwę marki/modelu z tabeli modeli
 def assign_marka_model(pojazdy, modele, marki):
-    # Mapujemy marki po _id
+    """
+    Na podstawie ID modelu w pojeździe przypisuje do niego
+    odpowiednią nazwę marki i modelu (tekstowe).
+    """
+    # Mapa: marka_id -> nazwa marki
     marki_map = {marka["_id"]: marka["nazwa"] for marka in marki}
-    # Mapujemy modele: model_id -> (marka_nazwa, model_nazwa)
+    # Mapa: model_id -> (marka_nazwa, model_nazwa)
     modele_map = {}
     for model in modele:
         marka_nazwa = marki_map.get(model["id_marki"], "Nieznana")
         modele_map[model["_id"]] = (marka_nazwa, model["nazwa"])
-    # Uzupełniamy dane w pojazdach
+
     for poj in pojazdy:
-        marka_model = modele_map.get(poj["id_modelu"], ("Nieznana", "Nieznany"))
-        poj["marka"] = marka_model[0]
-        poj["model"] = marka_model[1]
+        brand_model = modele_map.get(poj["id_modelu"], ("Nieznana", "Nieznany"))
+        poj["marka"] = brand_model[0]
+        poj["model"] = brand_model[1]
+
     return pojazdy
 
 
-# Wspólna generacja danych
+# -------------------
+# Generowanie danych
+# -------------------
 klienci = generate_klienci()
 pracownicy = generate_pracownicy()
 typy_nadwozia = generate_typ_nadwozia()
-marki = generate_marki()
-modele = generate_modele(marki)
+
+# Nowa funkcja zwracająca listę marek i listę modeli
+marki, modele = generate_marki_modele()
+
 pojazdy = generate_pojazdy(modele)
+# Uzupełniamy w słowniku pojazdu nazwę marki i model
 pojazdy = assign_marka_model(pojazdy, modele, marki)
+
 wypozyczenia = generate_wypozyczenia(klienci, pojazdy, pracownicy)
 rezerwacje = generate_rezerwacje(klienci, pojazdy, pracownicy)
 platnosci = generate_platnosci(wypozyczenia)
@@ -281,8 +294,8 @@ serwis = generate_serwis(pojazdy)
 
 # ------------------------------------------------------
 # Funkcje do wstawiania danych do poszczególnych baz
+# (pozostają zasadniczo bez zmian)
 # ------------------------------------------------------
-
 
 # ---- MySQL ----
 def populate_mysql():
@@ -296,160 +309,160 @@ def populate_mysql():
     )
     cursor = conn.cursor()
 
-    # Tworzymy tabele (przykładowe definicje)
+    # Tworzymy tabele
     cursor.execute(
         """
-    CREATE TABLE IF NOT EXISTS klienci (
-      id VARCHAR(36) PRIMARY KEY,
-      imie VARCHAR(50),
-      nazwisko VARCHAR(50),
-      telefon VARCHAR(20),
-      data_urodzenia DATE,
-      pesel VARCHAR(20),
-      adres VARCHAR(255),
-      kod_pocztowy VARCHAR(10),
-      miasto VARCHAR(50)
-    );
-    """
+        CREATE TABLE IF NOT EXISTS klienci (
+          id VARCHAR(36) PRIMARY KEY,
+          imie VARCHAR(50),
+          nazwisko VARCHAR(50),
+          telefon VARCHAR(20),
+          data_urodzenia DATE,
+          pesel VARCHAR(20),
+          adres VARCHAR(255),
+          kod_pocztowy VARCHAR(10),
+          miasto VARCHAR(50)
+        );
+        """
     )
     cursor.execute(
         """
-    CREATE TABLE IF NOT EXISTS pracownicy (
-      id VARCHAR(36) PRIMARY KEY,
-      imie VARCHAR(50),
-      nazwisko VARCHAR(50),
-      telefon VARCHAR(20),
-      email VARCHAR(100)
-    );
-    """
+        CREATE TABLE IF NOT EXISTS pracownicy (
+          id VARCHAR(36) PRIMARY KEY,
+          imie VARCHAR(50),
+          nazwisko VARCHAR(50),
+          telefon VARCHAR(20),
+          email VARCHAR(100)
+        );
+        """
     )
     cursor.execute(
         """
-    CREATE TABLE IF NOT EXISTS typ_nadwozia (
-      id VARCHAR(36) PRIMARY KEY,
-      rodzaj_nadwozia VARCHAR(50)
-    );
-    """
+        CREATE TABLE IF NOT EXISTS typ_nadwozia (
+          id VARCHAR(36) PRIMARY KEY,
+          rodzaj_nadwozia VARCHAR(50)
+        );
+        """
     )
     cursor.execute(
         """
-    CREATE TABLE IF NOT EXISTS marki (
-      id VARCHAR(36) PRIMARY KEY,
-      nazwa VARCHAR(50)
-    );
-    """
+        CREATE TABLE IF NOT EXISTS marki (
+          id VARCHAR(36) PRIMARY KEY,
+          nazwa VARCHAR(50)
+        );
+        """
     )
     cursor.execute(
         """
-    CREATE TABLE IF NOT EXISTS modele (
-      id VARCHAR(36) PRIMARY KEY,
-      id_marki VARCHAR(36),
-      nazwa VARCHAR(50)
-    );
-    """
+        CREATE TABLE IF NOT EXISTS modele (
+          id VARCHAR(36) PRIMARY KEY,
+          id_marki VARCHAR(36),
+          nazwa VARCHAR(50)
+        );
+        """
     )
     cursor.execute(
         """
-    CREATE TABLE IF NOT EXISTS pojazdy (
-      id VARCHAR(36) PRIMARY KEY,
-      id_modelu VARCHAR(36),
-      przebieg DOUBLE,
-      rok_produkcji INT,
-      kolor_nadwozia VARCHAR(50),
-      kolor_wnetrza VARCHAR(50),
-      skrzynia_biegow VARCHAR(50),
-      paliwo VARCHAR(50),
-      pojemnosc_silnika DOUBLE,
-      cena_24h DOUBLE,
-      kaucja DOUBLE,
-      moc INT,
-      typ_nadwozia VARCHAR(50),
-      dostepnosc VARCHAR(50)
-    );
-    """
+        CREATE TABLE IF NOT EXISTS pojazdy (
+          id VARCHAR(36) PRIMARY KEY,
+          id_modelu VARCHAR(36),
+          przebieg DOUBLE,
+          rok_produkcji INT,
+          kolor_nadwozia VARCHAR(50),
+          kolor_wnetrza VARCHAR(50),
+          skrzynia_biegow VARCHAR(50),
+          paliwo VARCHAR(50),
+          pojemnosc_silnika DOUBLE,
+          cena_24h DOUBLE,
+          kaucja DOUBLE,
+          moc INT,
+          typ_nadwozia VARCHAR(50),
+          dostepnosc VARCHAR(50)
+        );
+        """
     )
     cursor.execute(
         """
-    CREATE TABLE IF NOT EXISTS wypozyczenia (
-      id VARCHAR(36) PRIMARY KEY,
-      data_wypozyczenia DATETIME,
-      data_zwrotu DATETIME,
-      przebieg_przed DOUBLE,
-      przebieg_po DOUBLE,
-      id_klienta VARCHAR(36),
-      imie_klienta VARCHAR(50),
-      nazwisko_klienta VARCHAR(50),
-      telefon_klienta VARCHAR(20),
-      pesel_klienta VARCHAR(20),
-      id_pojazdu VARCHAR(36),
-      marka VARCHAR(50),
-      model VARCHAR(50),
-      przebieg DOUBLE,
-      id_pracownika VARCHAR(36),
-      imie_pracownika VARCHAR(50),
-      nazwisko_pracownika VARCHAR(50)
-    );
-    """
+        CREATE TABLE IF NOT EXISTS wypozyczenia (
+          id VARCHAR(36) PRIMARY KEY,
+          data_wypozyczenia DATETIME,
+          data_zwrotu DATETIME,
+          przebieg_przed DOUBLE,
+          przebieg_po DOUBLE,
+          id_klienta VARCHAR(36),
+          imie_klienta VARCHAR(50),
+          nazwisko_klienta VARCHAR(50),
+          telefon_klienta VARCHAR(20),
+          pesel_klienta VARCHAR(20),
+          id_pojazdu VARCHAR(36),
+          marka VARCHAR(50),
+          model VARCHAR(50),
+          przebieg DOUBLE,
+          id_pracownika VARCHAR(36),
+          imie_pracownika VARCHAR(50),
+          nazwisko_pracownika VARCHAR(50)
+        );
+        """
     )
     cursor.execute(
         """
-    CREATE TABLE IF NOT EXISTS rezerwacje (
-      id VARCHAR(36) PRIMARY KEY,
-      data_rezerwacji DATETIME,
-      data_od DATETIME,
-      data_do DATETIME,
-      status_rezerwacji VARCHAR(50),
-      id_klienta VARCHAR(36),
-      imie_klienta VARCHAR(50),
-      nazwisko_klienta VARCHAR(50),
-      id_pojazdu VARCHAR(36),
-      marka VARCHAR(50),
-      model VARCHAR(50),
-      id_pracownika VARCHAR(36),
-      imie_pracownika VARCHAR(50),
-      nazwisko_pracownika VARCHAR(50)
-    );
-    """
+        CREATE TABLE IF NOT EXISTS rezerwacje (
+          id VARCHAR(36) PRIMARY KEY,
+          data_rezerwacji DATETIME,
+          data_od DATETIME,
+          data_do DATETIME,
+          status_rezerwacji VARCHAR(50),
+          id_klienta VARCHAR(36),
+          imie_klienta VARCHAR(50),
+          nazwisko_klienta VARCHAR(50),
+          id_pojazdu VARCHAR(36),
+          marka VARCHAR(50),
+          model VARCHAR(50),
+          id_pracownika VARCHAR(36),
+          imie_pracownika VARCHAR(50),
+          nazwisko_pracownika VARCHAR(50)
+        );
+        """
     )
     cursor.execute(
         """
-    CREATE TABLE IF NOT EXISTS platnosci (
-      id VARCHAR(36) PRIMARY KEY,
-      id_wypozyczenia VARCHAR(36),
-      klient_imie VARCHAR(50),
-      klient_nazwisko VARCHAR(50),
-      pojazd_marka VARCHAR(50),
-      pojazd_model VARCHAR(50),
-      data_wypozyczenia DATETIME,
-      data_zwrotu DATETIME,
-      kwota DOUBLE,
-      typ_platnosci VARCHAR(50),
-      data_platnosci DATETIME,
-      opis VARCHAR(255)
-    );
-    """
+        CREATE TABLE IF NOT EXISTS platnosci (
+          id VARCHAR(36) PRIMARY KEY,
+          id_wypozyczenia VARCHAR(36),
+          klient_imie VARCHAR(50),
+          klient_nazwisko VARCHAR(50),
+          pojazd_marka VARCHAR(50),
+          pojazd_model VARCHAR(50),
+          data_wypozyczenia DATETIME,
+          data_zwrotu DATETIME,
+          kwota DOUBLE,
+          typ_platnosci VARCHAR(50),
+          data_platnosci DATETIME,
+          opis VARCHAR(255)
+        );
+        """
     )
     cursor.execute(
         """
-    CREATE TABLE IF NOT EXISTS serwis (
-      id VARCHAR(36) PRIMARY KEY,
-      id_pojazdu VARCHAR(36),
-      marka VARCHAR(50),
-      model VARCHAR(50),
-      data_serwisu DATETIME,
-      opis VARCHAR(255),
-      koszt DOUBLE
-    );
-    """
+        CREATE TABLE IF NOT EXISTS serwis (
+          id VARCHAR(36) PRIMARY KEY,
+          id_pojazdu VARCHAR(36),
+          marka VARCHAR(50),
+          model VARCHAR(50),
+          data_serwisu DATETIME,
+          opis VARCHAR(255),
+          koszt DOUBLE
+        );
+        """
     )
 
     # Wstawianie danych
     for klient in klienci:
         cursor.execute(
             """
-        INSERT INTO klienci (id, imie, nazwisko, telefon, data_urodzenia, pesel, adres, kod_pocztowy, miasto)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-        """,
+            INSERT INTO klienci (id, imie, nazwisko, telefon, data_urodzenia, pesel, adres, kod_pocztowy, miasto)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
             (
                 klient["id_klienta"],
                 klient["imie"],
@@ -465,9 +478,9 @@ def populate_mysql():
     for pracownik in pracownicy:
         cursor.execute(
             """
-        INSERT INTO pracownicy (id, imie, nazwisko, telefon, email)
-        VALUES (%s, %s, %s, %s, %s)
-        """,
+            INSERT INTO pracownicy (id, imie, nazwisko, telefon, email)
+            VALUES (%s, %s, %s, %s, %s)
+            """,
             (
                 pracownik["id_pracownika"],
                 pracownik["imie"],
@@ -479,34 +492,35 @@ def populate_mysql():
     for typ in typy_nadwozia:
         cursor.execute(
             """
-        INSERT INTO typ_nadwozia (id, rodzaj_nadwozia)
-        VALUES (%s, %s)
-        """,
+            INSERT INTO typ_nadwozia (id, rodzaj_nadwozia)
+            VALUES (%s, %s)
+            """,
             (typ["id"], typ["rodzaj_nadwozia"]),
         )
     for marka in marki:
         cursor.execute(
             """
-        INSERT INTO marki (id, nazwa)
-        VALUES (%s, %s)
-        """,
+            INSERT INTO marki (id, nazwa)
+            VALUES (%s, %s)
+            """,
             (marka["_id"], marka["nazwa"]),
         )
     for model in modele:
         cursor.execute(
             """
-        INSERT INTO modele (id, id_marki, nazwa)
-        VALUES (%s, %s, %s)
-        """,
+            INSERT INTO modele (id, id_marki, nazwa)
+            VALUES (%s, %s, %s)
+            """,
             (model["_id"], model["id_marki"], model["nazwa"]),
         )
     for poj in pojazdy:
         cursor.execute(
             """
-        INSERT INTO pojazdy (id, id_modelu, przebieg, rok_produkcji, kolor_nadwozia, kolor_wnetrza, skrzynia_biegow,
-                              paliwo, pojemnosc_silnika, cena_24h, kaucja, moc, typ_nadwozia, dostepnosc)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        """,
+            INSERT INTO pojazdy (id, id_modelu, przebieg, rok_produkcji, kolor_nadwozia, kolor_wnetrza,
+                                 skrzynia_biegow, paliwo, pojemnosc_silnika, cena_24h, kaucja,
+                                 moc, typ_nadwozia, dostepnosc)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
             (
                 poj["id_pojazdu"],
                 poj["id_modelu"],
@@ -527,12 +541,16 @@ def populate_mysql():
     for wyp in wypozyczenia:
         cursor.execute(
             """
-        INSERT INTO wypozyczenia (id, data_wypozyczenia, data_zwrotu, przebieg_przed, przebieg_po,
-                                  id_klienta, imie_klienta, nazwisko_klienta, telefon_klienta, pesel_klienta,
-                                  id_pojazdu, marka, model, przebieg,
-                                  id_pracownika, imie_pracownika, nazwisko_pracownika)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        """,
+            INSERT INTO wypozyczenia (
+                id, data_wypozyczenia, data_zwrotu,
+                przebieg_przed, przebieg_po,
+                id_klienta, imie_klienta, nazwisko_klienta,
+                telefon_klienta, pesel_klienta,
+                id_pojazdu, marka, model, przebieg,
+                id_pracownika, imie_pracownika, nazwisko_pracownika
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
             (
                 wyp["id_wypozyczenia"],
                 wyp["data_wypozyczenia"],
@@ -556,12 +574,14 @@ def populate_mysql():
     for rez in rezerwacje:
         cursor.execute(
             """
-        INSERT INTO rezerwacje (id, data_rezerwacji, data_od, data_do, status_rezerwacji,
-                                  id_klienta, imie_klienta, nazwisko_klienta,
-                                  id_pojazdu, marka, model,
-                                  id_pracownika, imie_pracownika, nazwisko_pracownika)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        """,
+            INSERT INTO rezerwacje (
+                id, data_rezerwacji, data_od, data_do, status_rezerwacji,
+                id_klienta, imie_klienta, nazwisko_klienta,
+                id_pojazdu, marka, model,
+                id_pracownika, imie_pracownika, nazwisko_pracownika
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
             (
                 rez["id_rezerwacji"],
                 rez["data_rezerwacji"],
@@ -582,10 +602,16 @@ def populate_mysql():
     for plat in platnosci:
         cursor.execute(
             """
-        INSERT INTO platnosci (id, id_wypozyczenia, klient_imie, klient_nazwisko, pojazd_marka, pojazd_model,
-                               data_wypozyczenia, data_zwrotu, kwota, typ_platnosci, data_platnosci, opis)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        """,
+            INSERT INTO platnosci (
+                id, id_wypozyczenia,
+                klient_imie, klient_nazwisko,
+                pojazd_marka, pojazd_model,
+                data_wypozyczenia, data_zwrotu,
+                kwota, typ_platnosci,
+                data_platnosci, opis
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
             (
                 plat["id_platnosci"],
                 plat["wypozyczenie"]["id_wypozyczenia"],
@@ -604,9 +630,12 @@ def populate_mysql():
     for srv in serwis:
         cursor.execute(
             """
-        INSERT INTO serwis (id, id_pojazdu, marka, model, data_serwisu, opis, koszt)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
-        """,
+            INSERT INTO serwis (
+                id, id_pojazdu, marka, model,
+                data_serwisu, opis, koszt
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """,
             (
                 srv["id_serwisu"],
                 srv["pojazd"]["id_pojazdu"],
@@ -634,151 +663,151 @@ def populate_postgres():
         dbname="my_database",
     )
     cursor = conn.cursor()
-    # Tworzymy tabele (używamy podobnych definicji jak dla MySQL)
+    # Tworzymy tabele (podobnie jak dla MySQL)
     cursor.execute(
         """
-    CREATE TABLE IF NOT EXISTS klienci (
-      id VARCHAR(36) PRIMARY KEY,
-      imie VARCHAR(50),
-      nazwisko VARCHAR(50),
-      telefon VARCHAR(20),
-      data_urodzenia DATE,
-      pesel VARCHAR(20),
-      adres VARCHAR(255),
-      kod_pocztowy VARCHAR(10),
-      miasto VARCHAR(50)
-    );
-    """
+        CREATE TABLE IF NOT EXISTS klienci (
+          id VARCHAR(36) PRIMARY KEY,
+          imie VARCHAR(50),
+          nazwisko VARCHAR(50),
+          telefon VARCHAR(20),
+          data_urodzenia DATE,
+          pesel VARCHAR(20),
+          adres VARCHAR(255),
+          kod_pocztowy VARCHAR(10),
+          miasto VARCHAR(50)
+        );
+        """
     )
     cursor.execute(
         """
-    CREATE TABLE IF NOT EXISTS pracownicy (
-      id VARCHAR(36) PRIMARY KEY,
-      imie VARCHAR(50),
-      nazwisko VARCHAR(50),
-      telefon VARCHAR(20),
-      email VARCHAR(100)
-    );
-    """
+        CREATE TABLE IF NOT EXISTS pracownicy (
+          id VARCHAR(36) PRIMARY KEY,
+          imie VARCHAR(50),
+          nazwisko VARCHAR(50),
+          telefon VARCHAR(20),
+          email VARCHAR(100)
+        );
+        """
     )
     cursor.execute(
         """
-    CREATE TABLE IF NOT EXISTS typ_nadwozia (
-      id VARCHAR(36) PRIMARY KEY,
-      rodzaj_nadwozia VARCHAR(50)
-    );
-    """
+        CREATE TABLE IF NOT EXISTS typ_nadwozia (
+          id VARCHAR(36) PRIMARY KEY,
+          rodzaj_nadwozia VARCHAR(50)
+        );
+        """
     )
     cursor.execute(
         """
-    CREATE TABLE IF NOT EXISTS marki (
-      id VARCHAR(36) PRIMARY KEY,
-      nazwa VARCHAR(50)
-    );
-    """
+        CREATE TABLE IF NOT EXISTS marki (
+          id VARCHAR(36) PRIMARY KEY,
+          nazwa VARCHAR(50)
+        );
+        """
     )
     cursor.execute(
         """
-    CREATE TABLE IF NOT EXISTS modele (
-      id VARCHAR(36) PRIMARY KEY,
-      id_marki VARCHAR(36),
-      nazwa VARCHAR(50)
-    );
-    """
+        CREATE TABLE IF NOT EXISTS modele (
+          id VARCHAR(36) PRIMARY KEY,
+          id_marki VARCHAR(36),
+          nazwa VARCHAR(50)
+        );
+        """
     )
     cursor.execute(
         """
-    CREATE TABLE IF NOT EXISTS pojazdy (
-      id VARCHAR(36) PRIMARY KEY,
-      id_modelu VARCHAR(36),
-      przebieg DOUBLE PRECISION,
-      rok_produkcji INT,
-      kolor_nadwozia VARCHAR(50),
-      kolor_wnetrza VARCHAR(50),
-      skrzynia_biegow VARCHAR(50),
-      paliwo VARCHAR(50),
-      pojemnosc_silnika DOUBLE PRECISION,
-      cena_24h DOUBLE PRECISION,
-      kaucja DOUBLE PRECISION,
-      moc INT,
-      typ_nadwozia VARCHAR(50),
-      dostepnosc VARCHAR(50)
-    );
-    """
+        CREATE TABLE IF NOT EXISTS pojazdy (
+          id VARCHAR(36) PRIMARY KEY,
+          id_modelu VARCHAR(36),
+          przebieg DOUBLE PRECISION,
+          rok_produkcji INT,
+          kolor_nadwozia VARCHAR(50),
+          kolor_wnetrza VARCHAR(50),
+          skrzynia_biegow VARCHAR(50),
+          paliwo VARCHAR(50),
+          pojemnosc_silnika DOUBLE PRECISION,
+          cena_24h DOUBLE PRECISION,
+          kaucja DOUBLE PRECISION,
+          moc INT,
+          typ_nadwozia VARCHAR(50),
+          dostepnosc VARCHAR(50)
+        );
+        """
     )
     cursor.execute(
         """
-    CREATE TABLE IF NOT EXISTS wypozyczenia (
-      id VARCHAR(36) PRIMARY KEY,
-      data_wypozyczenia TIMESTAMP,
-      data_zwrotu TIMESTAMP,
-      przebieg_przed DOUBLE PRECISION,
-      przebieg_po DOUBLE PRECISION,
-      id_klienta VARCHAR(36),
-      imie_klienta VARCHAR(50),
-      nazwisko_klienta VARCHAR(50),
-      telefon_klienta VARCHAR(20),
-      pesel_klienta VARCHAR(20),
-      id_pojazdu VARCHAR(36),
-      marka VARCHAR(50),
-      model VARCHAR(50),
-      przebieg DOUBLE PRECISION,
-      id_pracownika VARCHAR(36),
-      imie_pracownika VARCHAR(50),
-      nazwisko_pracownika VARCHAR(50)
-    );
-    """
+        CREATE TABLE IF NOT EXISTS wypozyczenia (
+          id VARCHAR(36) PRIMARY KEY,
+          data_wypozyczenia TIMESTAMP,
+          data_zwrotu TIMESTAMP,
+          przebieg_przed DOUBLE PRECISION,
+          przebieg_po DOUBLE PRECISION,
+          id_klienta VARCHAR(36),
+          imie_klienta VARCHAR(50),
+          nazwisko_klienta VARCHAR(50),
+          telefon_klienta VARCHAR(20),
+          pesel_klienta VARCHAR(20),
+          id_pojazdu VARCHAR(36),
+          marka VARCHAR(50),
+          model VARCHAR(50),
+          przebieg DOUBLE PRECISION,
+          id_pracownika VARCHAR(36),
+          imie_pracownika VARCHAR(50),
+          nazwisko_pracownika VARCHAR(50)
+        );
+        """
     )
     cursor.execute(
         """
-    CREATE TABLE IF NOT EXISTS rezerwacje (
-      id VARCHAR(36) PRIMARY KEY,
-      data_rezerwacji TIMESTAMP,
-      data_od TIMESTAMP,
-      data_do TIMESTAMP,
-      status_rezerwacji VARCHAR(50),
-      id_klienta VARCHAR(36),
-      imie_klienta VARCHAR(50),
-      nazwisko_klienta VARCHAR(50),
-      id_pojazdu VARCHAR(36),
-      marka VARCHAR(50),
-      model VARCHAR(50),
-      id_pracownika VARCHAR(36),
-      imie_pracownika VARCHAR(50),
-      nazwisko_pracownika VARCHAR(50)
-    );
-    """
+        CREATE TABLE IF NOT EXISTS rezerwacje (
+          id VARCHAR(36) PRIMARY KEY,
+          data_rezerwacji TIMESTAMP,
+          data_od TIMESTAMP,
+          data_do TIMESTAMP,
+          status_rezerwacji VARCHAR(50),
+          id_klienta VARCHAR(36),
+          imie_klienta VARCHAR(50),
+          nazwisko_klienta VARCHAR(50),
+          id_pojazdu VARCHAR(36),
+          marka VARCHAR(50),
+          model VARCHAR(50),
+          id_pracownika VARCHAR(36),
+          imie_pracownika VARCHAR(50),
+          nazwisko_pracownika VARCHAR(50)
+        );
+        """
     )
     cursor.execute(
         """
-    CREATE TABLE IF NOT EXISTS platnosci (
-      id VARCHAR(36) PRIMARY KEY,
-      id_wypozyczenia VARCHAR(36),
-      klient_imie VARCHAR(50),
-      klient_nazwisko VARCHAR(50),
-      pojazd_marka VARCHAR(50),
-      pojazd_model VARCHAR(50),
-      data_wypozyczenia TIMESTAMP,
-      data_zwrotu TIMESTAMP,
-      kwota DOUBLE PRECISION,
-      typ_platnosci VARCHAR(50),
-      data_platnosci TIMESTAMP,
-      opis VARCHAR(255)
-    );
-    """
+        CREATE TABLE IF NOT EXISTS platnosci (
+          id VARCHAR(36) PRIMARY KEY,
+          id_wypozyczenia VARCHAR(36),
+          klient_imie VARCHAR(50),
+          klient_nazwisko VARCHAR(50),
+          pojazd_marka VARCHAR(50),
+          pojazd_model VARCHAR(50),
+          data_wypozyczenia TIMESTAMP,
+          data_zwrotu TIMESTAMP,
+          kwota DOUBLE PRECISION,
+          typ_platnosci VARCHAR(50),
+          data_platnosci TIMESTAMP,
+          opis VARCHAR(255)
+        );
+        """
     )
     cursor.execute(
         """
-    CREATE TABLE IF NOT EXISTS serwis (
-      id VARCHAR(36) PRIMARY KEY,
-      id_pojazdu VARCHAR(36),
-      marka VARCHAR(50),
-      model VARCHAR(50),
-      data_serwisu TIMESTAMP,
-      opis VARCHAR(255),
-      koszt DOUBLE PRECISION
-    );
-    """
+        CREATE TABLE IF NOT EXISTS serwis (
+          id VARCHAR(36) PRIMARY KEY,
+          id_pojazdu VARCHAR(36),
+          marka VARCHAR(50),
+          model VARCHAR(50),
+          data_serwisu TIMESTAMP,
+          opis VARCHAR(255),
+          koszt DOUBLE PRECISION
+        );
+        """
     )
     conn.commit()
 
@@ -786,9 +815,9 @@ def populate_postgres():
     for klient in klienci:
         cursor.execute(
             """
-        INSERT INTO klienci (id, imie, nazwisko, telefon, data_urodzenia, pesel, adres, kod_pocztowy, miasto)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-        """,
+            INSERT INTO klienci (id, imie, nazwisko, telefon, data_urodzenia, pesel, adres, kod_pocztowy, miasto)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
             (
                 klient["id_klienta"],
                 klient["imie"],
@@ -804,9 +833,9 @@ def populate_postgres():
     for pracownik in pracownicy:
         cursor.execute(
             """
-        INSERT INTO pracownicy (id, imie, nazwisko, telefon, email)
-        VALUES (%s, %s, %s, %s, %s)
-        """,
+            INSERT INTO pracownicy (id, imie, nazwisko, telefon, email)
+            VALUES (%s, %s, %s, %s, %s)
+            """,
             (
                 pracownik["id_pracownika"],
                 pracownik["imie"],
@@ -818,34 +847,35 @@ def populate_postgres():
     for typ in typy_nadwozia:
         cursor.execute(
             """
-        INSERT INTO typ_nadwozia (id, rodzaj_nadwozia)
-        VALUES (%s, %s)
-        """,
+            INSERT INTO typ_nadwozia (id, rodzaj_nadwozia)
+            VALUES (%s, %s)
+            """,
             (typ["id"], typ["rodzaj_nadwozia"]),
         )
     for marka in marki:
         cursor.execute(
             """
-        INSERT INTO marki (id, nazwa)
-        VALUES (%s, %s)
-        """,
+            INSERT INTO marki (id, nazwa)
+            VALUES (%s, %s)
+            """,
             (marka["_id"], marka["nazwa"]),
         )
     for model in modele:
         cursor.execute(
             """
-        INSERT INTO modele (id, id_marki, nazwa)
-        VALUES (%s, %s, %s)
-        """,
+            INSERT INTO modele (id, id_marki, nazwa)
+            VALUES (%s, %s, %s)
+            """,
             (model["_id"], model["id_marki"], model["nazwa"]),
         )
     for poj in pojazdy:
         cursor.execute(
             """
-        INSERT INTO pojazdy (id, id_modelu, przebieg, rok_produkcji, kolor_nadwozia, kolor_wnetrza, skrzynia_biegow,
-                              paliwo, pojemnosc_silnika, cena_24h, kaucja, moc, typ_nadwozia, dostepnosc)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        """,
+            INSERT INTO pojazdy (id, id_modelu, przebieg, rok_produkcji, kolor_nadwozia, kolor_wnetrza,
+                                 skrzynia_biegow, paliwo, pojemnosc_silnika, cena_24h, kaucja, moc,
+                                 typ_nadwozia, dostepnosc)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
             (
                 poj["id_pojazdu"],
                 poj["id_modelu"],
@@ -866,12 +896,16 @@ def populate_postgres():
     for wyp in wypozyczenia:
         cursor.execute(
             """
-        INSERT INTO wypozyczenia (id, data_wypozyczenia, data_zwrotu, przebieg_przed, przebieg_po,
-                                  id_klienta, imie_klienta, nazwisko_klienta, telefon_klienta, pesel_klienta,
-                                  id_pojazdu, marka, model, przebieg,
-                                  id_pracownika, imie_pracownika, nazwisko_pracownika)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        """,
+            INSERT INTO wypozyczenia (
+                id, data_wypozyczenia, data_zwrotu,
+                przebieg_przed, przebieg_po,
+                id_klienta, imie_klienta, nazwisko_klienta,
+                telefon_klienta, pesel_klienta,
+                id_pojazdu, marka, model, przebieg,
+                id_pracownika, imie_pracownika, nazwisko_pracownika
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
             (
                 wyp["id_wypozyczenia"],
                 wyp["data_wypozyczenia"],
@@ -895,12 +929,14 @@ def populate_postgres():
     for rez in rezerwacje:
         cursor.execute(
             """
-        INSERT INTO rezerwacje (id, data_rezerwacji, data_od, data_do, status_rezerwacji,
-                                  id_klienta, imie_klienta, nazwisko_klienta,
-                                  id_pojazdu, marka, model,
-                                  id_pracownika, imie_pracownika, nazwisko_pracownika)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        """,
+            INSERT INTO rezerwacje (
+                id, data_rezerwacji, data_od, data_do, status_rezerwacji,
+                id_klienta, imie_klienta, nazwisko_klienta,
+                id_pojazdu, marka, model,
+                id_pracownika, imie_pracownika, nazwisko_pracownika
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
             (
                 rez["id_rezerwacji"],
                 rez["data_rezerwacji"],
@@ -921,10 +957,15 @@ def populate_postgres():
     for plat in platnosci:
         cursor.execute(
             """
-        INSERT INTO platnosci (id, id_wypozyczenia, klient_imie, klient_nazwisko, pojazd_marka, pojazd_model,
-                               data_wypozyczenia, data_zwrotu, kwota, typ_platnosci, data_platnosci, opis)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        """,
+            INSERT INTO platnosci (
+                id, id_wypozyczenia, klient_imie, klient_nazwisko,
+                pojazd_marka, pojazd_model,
+                data_wypozyczenia, data_zwrotu,
+                kwota, typ_platnosci,
+                data_platnosci, opis
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
             (
                 plat["id_platnosci"],
                 plat["wypozyczenie"]["id_wypozyczenia"],
@@ -943,9 +984,12 @@ def populate_postgres():
     for srv in serwis:
         cursor.execute(
             """
-        INSERT INTO serwis (id, id_pojazdu, marka, model, data_serwisu, opis, koszt)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
-        """,
+            INSERT INTO serwis (
+                id, id_pojazdu, marka, model,
+                data_serwisu, opis, koszt
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """,
             (
                 srv["id_serwisu"],
                 srv["pojazd"]["id_pojazdu"],
@@ -965,175 +1009,171 @@ def populate_postgres():
 # ---- Cassandra ----
 def populate_cassandra():
     print("Łączenie z bazą Cassandra...")
-    cluster = Cluster(["localhost"], port=9042)
+    cluster = Cluster(["localhost"], port=9042, connection_class=GeventConnection)
     session = cluster.connect()
     # Tworzymy keyspace i tabele – przykładowe definicje
     session.execute(
         """
-    CREATE KEYSPACE IF NOT EXISTS test_keyspace
-    WITH replication = {'class': 'SimpleStrategy', 'replication_factor': '1'}
-    """
+        CREATE KEYSPACE IF NOT EXISTS test_keyspace
+        WITH replication = {'class': 'SimpleStrategy', 'replication_factor': '1'}
+        """
     )
     session.set_keyspace("test_keyspace")
-    # Przykładowe tabele – uproszczone definicje
+
     session.execute(
         """
-    CREATE TABLE IF NOT EXISTS klienci (
-      id uuid PRIMARY KEY,
-      imie text,
-      nazwisko text,
-      telefon text,
-      data_urodzenia date,
-      pesel text,
-      adres text,
-      kod_pocztowy text,
-      miasto text
-    )
-    """
-    )
-    session.execute(
+        CREATE TABLE IF NOT EXISTS klienci (
+          id uuid PRIMARY KEY,
+          imie text,
+          nazwisko text,
+          telefon text,
+          data_urodzenia date,
+          pesel text,
+          adres text,
+          kod_pocztowy text,
+          miasto text
+        )
         """
-    CREATE TABLE IF NOT EXISTS pracownicy (
-      id uuid PRIMARY KEY,
-      imie text,
-      nazwisko text,
-      telefon text,
-      email text
-    )
-    """
     )
     session.execute(
         """
-    CREATE TABLE IF NOT EXISTS marki (
-      id uuid PRIMARY KEY,
-      nazwa text
-    )
-    """
+        CREATE TABLE IF NOT EXISTS pracownicy (
+          id uuid PRIMARY KEY,
+          imie text,
+          nazwisko text,
+          telefon text,
+          email text
+        )
+        """
     )
     session.execute(
         """
-    CREATE TABLE IF NOT EXISTS modele (
-      id uuid PRIMARY KEY,
-      id_marki uuid,
-      nazwa text
-    )
-    """
+        CREATE TABLE IF NOT EXISTS marki (
+          id uuid PRIMARY KEY,
+          nazwa text
+        )
+        """
     )
     session.execute(
         """
-    CREATE TABLE IF NOT EXISTS pojazdy (
-      id uuid PRIMARY KEY,
-      id_modelu uuid,
-      przebieg double,
-      rok_produkcji int,
-      kolor_nadwozia text,
-      kolor_wnetrza text,
-      skrzynia_biegow text,
-      paliwo text,
-      pojemnosc_silnika double,
-      cena_24h double,
-      kaucja double,
-      moc int,
-      typ_nadwozia text,
-      dostepnosc text
-    )
-    """
-    )
-    # Analogiczne tabele dla wypozyczenia, rezerwacji, platnosci, serwis – uproszczone (dla przykładu)
-    session.execute(
+        CREATE TABLE IF NOT EXISTS modele (
+          id uuid PRIMARY KEY,
+          id_marki uuid,
+          nazwa text
+        )
         """
-    CREATE TABLE IF NOT EXISTS wypozyczenia (
-      id uuid PRIMARY KEY,
-      data_wypozyczenia timestamp,
-      data_zwrotu timestamp,
-      przebieg_przed double,
-      przebieg_po double,
-      id_klienta uuid,
-      imie_klienta text,
-      nazwisko_klienta text,
-      telefon_klienta text,
-      pesel_klienta text,
-      id_pojazdu uuid,
-      marka text,
-      model text,
-      przebieg double,
-      id_pracownika uuid,
-      imie_pracownika text,
-      nazwisko_pracownika text
-    )
-    """
     )
     session.execute(
         """
-    CREATE TABLE IF NOT EXISTS rezerwacje (
-      id uuid PRIMARY KEY,
-      data_rezerwacji timestamp,
-      data_od timestamp,
-      data_do timestamp,
-      status_rezerwacji text,
-      id_klienta uuid,
-      imie_klienta text,
-      nazwisko_klienta text,
-      id_pojazdu uuid,
-      marka text,
-      model text,
-      id_pracownika uuid,
-      imie_pracownika text,
-      nazwisko_pracownika text
-    )
-    """
+        CREATE TABLE IF NOT EXISTS pojazdy (
+          id uuid PRIMARY KEY,
+          id_modelu uuid,
+          przebieg double,
+          rok_produkcji int,
+          kolor_nadwozia text,
+          kolor_wnetrza text,
+          skrzynia_biegow text,
+          paliwo text,
+          pojemnosc_silnika double,
+          cena_24h double,
+          kaucja double,
+          moc int,
+          typ_nadwozia text,
+          dostepnosc text
+        )
+        """
     )
     session.execute(
         """
-    CREATE TABLE IF NOT EXISTS platnosci (
-      id uuid PRIMARY KEY,
-      id_wypozyczenia uuid,
-      klient_imie text,
-      klient_nazwisko text,
-      pojazd_marka text,
-      pojazd_model text,
-      data_wypozyczenia timestamp,
-      data_zwrotu timestamp,
-      kwota double,
-      typ_platnosci text,
-      data_platnosci timestamp,
-      opis text
-    )
-    """
+        CREATE TABLE IF NOT EXISTS wypozyczenia (
+          id uuid PRIMARY KEY,
+          data_wypozyczenia timestamp,
+          data_zwrotu timestamp,
+          przebieg_przed double,
+          przebieg_po double,
+          id_klienta uuid,
+          imie_klienta text,
+          nazwisko_klienta text,
+          telefon_klienta text,
+          pesel_klienta text,
+          id_pojazdu uuid,
+          marka text,
+          model text,
+          przebieg double,
+          id_pracownika uuid,
+          imie_pracownika text,
+          nazwisko_pracownika text
+        )
+        """
     )
     session.execute(
         """
-    CREATE TABLE IF NOT EXISTS serwis (
-      id uuid PRIMARY KEY,
-      id_pojazdu uuid,
-      marka text,
-      model text,
-      data_serwisu timestamp,
-      opis text,
-      koszt double
+        CREATE TABLE IF NOT EXISTS rezerwacje (
+          id uuid PRIMARY KEY,
+          data_rezerwacji timestamp,
+          data_od timestamp,
+          data_do timestamp,
+          status_rezerwacji text,
+          id_klienta uuid,
+          imie_klienta text,
+          nazwisko_klienta text,
+          id_pojazdu uuid,
+          marka text,
+          model text,
+          id_pracownika uuid,
+          imie_pracownika text,
+          nazwisko_pracownika text
+        )
+        """
     )
-    """
+    session.execute(
+        """
+        CREATE TABLE IF NOT EXISTS platnosci (
+          id uuid PRIMARY KEY,
+          id_wypozyczenia uuid,
+          klient_imie text,
+          klient_nazwisko text,
+          pojazd_marka text,
+          pojazd_model text,
+          data_wypozyczenia timestamp,
+          data_zwrotu timestamp,
+          kwota double,
+          typ_platnosci text,
+          data_platnosci timestamp,
+          opis text
+        )
+        """
+    )
+    session.execute(
+        """
+        CREATE TABLE IF NOT EXISTS serwis (
+          id uuid PRIMARY KEY,
+          id_pojazdu uuid,
+          marka text,
+          model text,
+          data_serwisu timestamp,
+          opis text,
+          koszt double
+        )
+        """
     )
 
-    # Funkcja pomocnicza do konwersji ID
     def uuid_from_str(id_str):
         return uuid.UUID(id_str)
 
-    # Wstawianie danych – przy konwersji daty u klientów używamy .date()
+    # Wstawianie danych
     for klient in klienci:
         session.execute(
             """
-        INSERT INTO klienci (id, imie, nazwisko, telefon, data_urodzenia, pesel, adres, kod_pocztowy, miasto)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-        """,
+            INSERT INTO klienci (id, imie, nazwisko, telefon, data_urodzenia, pesel, adres, kod_pocztowy, miasto)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
             (
                 uuid_from_str(klient["id_klienta"]),
                 klient["imie"],
                 klient["nazwisko"],
                 klient["telefon"],
-                datetime.fromisoformat(
-                    klient["data_urodzenia"]
-                ).date(),  # <-- zmiana tutaj
+                datetime.fromisoformat(klient["data_urodzenia"]).date(),
                 klient["pesel"],
                 klient["adres"],
                 klient["kod_pocztowy"],
@@ -1143,9 +1183,9 @@ def populate_cassandra():
     for pracownik in pracownicy:
         session.execute(
             """
-        INSERT INTO pracownicy (id, imie, nazwisko, telefon, email)
-        VALUES (%s, %s, %s, %s, %s)
-        """,
+            INSERT INTO pracownicy (id, imie, nazwisko, telefon, email)
+            VALUES (%s, %s, %s, %s, %s)
+            """,
             (
                 uuid_from_str(pracownik["id_pracownika"]),
                 pracownik["imie"],
@@ -1157,17 +1197,17 @@ def populate_cassandra():
     for marka in marki:
         session.execute(
             """
-        INSERT INTO marki (id, nazwa)
-        VALUES (%s, %s)
-        """,
+            INSERT INTO marki (id, nazwa)
+            VALUES (%s, %s)
+            """,
             (uuid_from_str(marka["_id"]), marka["nazwa"]),
         )
     for model in modele:
         session.execute(
             """
-        INSERT INTO modele (id, id_marki, nazwa)
-        VALUES (%s, %s, %s)
-        """,
+            INSERT INTO modele (id, id_marki, nazwa)
+            VALUES (%s, %s, %s)
+            """,
             (
                 uuid_from_str(model["_id"]),
                 uuid_from_str(model["id_marki"]),
@@ -1177,10 +1217,14 @@ def populate_cassandra():
     for poj in pojazdy:
         session.execute(
             """
-        INSERT INTO pojazdy (id, id_modelu, przebieg, rok_produkcji, kolor_nadwozia, kolor_wnetrza,
-                              skrzynia_biegow, paliwo, pojemnosc_silnika, cena_24h, kaucja, moc, typ_nadwozia, dostepnosc)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        """,
+            INSERT INTO pojazdy (
+                id, id_modelu, przebieg, rok_produkcji,
+                kolor_nadwozia, kolor_wnetrza,
+                skrzynia_biegow, paliwo,
+                pojemnosc_silnika, cena_24h,
+                kaucja, moc, typ_nadwozia, dostepnosc
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
             (
                 uuid_from_str(poj["id_pojazdu"]),
                 uuid_from_str(poj["id_modelu"]),
@@ -1201,12 +1245,15 @@ def populate_cassandra():
     for wyp in wypozyczenia:
         session.execute(
             """
-        INSERT INTO wypozyczenia (id, data_wypozyczenia, data_zwrotu, przebieg_przed, przebieg_po,
-                                  id_klienta, imie_klienta, nazwisko_klienta, telefon_klienta, pesel_klienta,
-                                  id_pojazdu, marka, model, przebieg,
-                                  id_pracownika, imie_pracownika, nazwisko_pracownika)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        """,
+            INSERT INTO wypozyczenia (
+                id, data_wypozyczenia, data_zwrotu,
+                przebieg_przed, przebieg_po,
+                id_klienta, imie_klienta, nazwisko_klienta,
+                telefon_klienta, pesel_klienta,
+                id_pojazdu, marka, model, przebieg,
+                id_pracownika, imie_pracownika, nazwisko_pracownika
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
             (
                 uuid_from_str(wyp["id_wypozyczenia"]),
                 datetime.fromisoformat(wyp["data_wypozyczenia"]),
@@ -1230,12 +1277,13 @@ def populate_cassandra():
     for rez in rezerwacje:
         session.execute(
             """
-        INSERT INTO rezerwacje (id, data_rezerwacji, data_od, data_do, status_rezerwacji,
-                                  id_klienta, imie_klienta, nazwisko_klienta,
-                                  id_pojazdu, marka, model,
-                                  id_pracownika, imie_pracownika, nazwisko_pracownika)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        """,
+            INSERT INTO rezerwacje (
+                id, data_rezerwacji, data_od, data_do, status_rezerwacji,
+                id_klienta, imie_klienta, nazwisko_klienta,
+                id_pojazdu, marka, model,
+                id_pracownika, imie_pracownika, nazwisko_pracownika
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
             (
                 uuid_from_str(rez["id_rezerwacji"]),
                 datetime.fromisoformat(rez["data_rezerwacji"]),
@@ -1256,10 +1304,13 @@ def populate_cassandra():
     for plat in platnosci:
         session.execute(
             """
-        INSERT INTO platnosci (id, id_wypozyczenia, klient_imie, klient_nazwisko, pojazd_marka, pojazd_model,
-                               data_wypozyczenia, data_zwrotu, kwota, typ_platnosci, data_platnosci, opis)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        """,
+            INSERT INTO platnosci (
+                id, id_wypozyczenia, klient_imie, klient_nazwisko,
+                pojazd_marka, pojazd_model,
+                data_wypozyczenia, data_zwrotu,
+                kwota, typ_platnosci, data_platnosci, opis
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
             (
                 uuid_from_str(plat["id_platnosci"]),
                 uuid_from_str(plat["wypozyczenie"]["id_wypozyczenia"]),
@@ -1278,9 +1329,11 @@ def populate_cassandra():
     for srv in serwis:
         session.execute(
             """
-        INSERT INTO serwis (id, id_pojazdu, marka, model, data_serwisu, opis, koszt)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
-        """,
+            INSERT INTO serwis (
+                id, id_pojazdu, marka, model,
+                data_serwisu, opis, koszt
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """,
             (
                 uuid_from_str(srv["id_serwisu"]),
                 uuid_from_str(srv["pojazd"]["id_pojazdu"]),
@@ -1291,7 +1344,7 @@ def populate_cassandra():
                 srv["koszt"],
             ),
         )
-    conn_success = True
+
     print("Dane zostały wstawione do Cassandry.")
     session.shutdown()
     cluster.shutdown()
@@ -1326,6 +1379,7 @@ def populate_mongo():
     collections["rezerwacje"].insert_many(rezerwacje)
     collections["platnosci"].insert_many(platnosci)
     collections["serwis"].insert_many(serwis)
+
     client.close()
     print("Dane zostały wstawione do MongoDB.")
 

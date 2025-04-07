@@ -2,3 +2,4 @@
 nosql/.DS_Store
 nosql/mongodb/.DS_Store
 /.venv
+temp*
