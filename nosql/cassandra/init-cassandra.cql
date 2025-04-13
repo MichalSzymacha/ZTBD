@@ -6,7 +6,7 @@ USE wypozyczalnia;
 
 -- Tabela klienci
 CREATE TABLE IF NOT EXISTS klienci (
-    id_klienta uuid PRIMARY KEY,
+    id uuid PRIMARY KEY,
     imie text,
     nazwisko text,
     telefon text,
@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS klienci (
 
 -- Tabela pracownicy
 CREATE TABLE IF NOT EXISTS pracownicy (
-    id_pracownika uuid PRIMARY KEY,
+    id uuid PRIMARY KEY,
     imie text,
     nazwisko text,
     telefon text,
@@ -27,31 +27,32 @@ CREATE TABLE IF NOT EXISTS pracownicy (
     pesel text,
     adres text,
     kod_pocztowy text,
-    miasto text
+    miasto text.
+    email text
 );
 
 -- Tabela typ_nadwozia
 CREATE TABLE IF NOT EXISTS typ_nadwozia (
-    id_nadwozia uuid PRIMARY KEY,
+    id uuid PRIMARY KEY,
     rodzaj_nadwozia text
 );
 
 -- Tabela marki
 CREATE TABLE IF NOT EXISTS marki (
-    id_marki uuid PRIMARY KEY,
+    id uuid PRIMARY KEY,
     nazwa text
 );
 
 -- Tabela modele
 CREATE TABLE IF NOT EXISTS modele (
-    id_modelu uuid PRIMARY KEY,
+    id uuid PRIMARY KEY,
     id_marki uuid,
     nazwa text
 );
 
 -- Tabela pojazdy
 CREATE TABLE IF NOT EXISTS pojazdy (
-    id_pojazdu uuid PRIMARY KEY,
+    id uuid PRIMARY KEY,
     id_modelu uuid,
     przebieg float,
     rok_produkcji int,
@@ -69,7 +70,7 @@ CREATE TABLE IF NOT EXISTS pojazdy (
 
 -- Tabela wypozyczenia
 CREATE TABLE IF NOT EXISTS wypozyczenia (
-    id_wypozyczenia uuid PRIMARY KEY,
+    id uuid PRIMARY KEY,
     id_pojazdu uuid,
     id_klienta uuid,
     id_pracownika uuid,
@@ -81,7 +82,7 @@ CREATE TABLE IF NOT EXISTS wypozyczenia (
 
 -- Tabela rezerwacje
 CREATE TABLE IF NOT EXISTS rezerwacje (
-    id_rezerwacji uuid PRIMARY KEY,
+    id uuid PRIMARY KEY,
     id_pojazdu uuid,
     id_klienta uuid,
     id_pracownika uuid,

@@ -4,7 +4,7 @@ ALTER ROLE "user" SET search_path TO wypozyczalnia;
 
 -- Tabela KLIENCI
 CREATE TABLE IF NOT EXISTS klienci (
-    id_klienta        SERIAL PRIMARY KEY,
+    id        SERIAL PRIMARY KEY,
     imie              VARCHAR(50) NOT NULL,
     nazwisko          VARCHAR(50) NOT NULL,
     telefon           VARCHAR(15),
@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS klienci (
 
 -- Tabela PRACOWNICY
 CREATE TABLE IF NOT EXISTS pracownicy (
-    id_pracownika     SERIAL PRIMARY KEY,
+    id     SERIAL PRIMARY KEY,
     imie              VARCHAR(50) NOT NULL,
     nazwisko          VARCHAR(50) NOT NULL,
     telefon           VARCHAR(15),
@@ -25,24 +25,25 @@ CREATE TABLE IF NOT EXISTS pracownicy (
     pesel             BIGINT UNIQUE,
     adres             TEXT,
     kod_pocztowy      VARCHAR(10),
-    miasto            TEXT
+    miasto            TEXT,
+    email             VARCHAR(100) UNIQUE NOT NULL
 );
 
 -- Tabela TYP_NADWOZIA
 CREATE TABLE IF NOT EXISTS typ_nadwozia (
-    id_nadwozia       SERIAL PRIMARY KEY,
+    id       SERIAL PRIMARY KEY,
     rodzaj_nadwozia   TEXT NOT NULL
 );
 
 -- Tabela MARKI
 CREATE TABLE IF NOT EXISTS marki (
-    id_marki SERIAL PRIMARY KEY,
+    id SERIAL PRIMARY KEY,
     nazwa TEXT UNIQUE NOT NULL
 );
 
 -- Tabela MODELE
 CREATE TABLE IF NOT EXISTS modele (
-    id_modelu SERIAL PRIMARY KEY,
+    id SERIAL PRIMARY KEY,
     id_marki INT NOT NULL,
     nazwa TEXT NOT NULL,
     FOREIGN KEY (id_marki) REFERENCES marki(id_marki) ON DELETE CASCADE
@@ -50,7 +51,7 @@ CREATE TABLE IF NOT EXISTS modele (
 
 -- Tabela POJAZDY
 CREATE TABLE IF NOT EXISTS pojazdy (
-    id_pojazdu SERIAL PRIMARY KEY,
+    id SERIAL PRIMARY KEY,
     id_modelu INT NOT NULL,
     przebieg FLOAT,
     rok_produkcji INT,
@@ -70,7 +71,7 @@ CREATE TABLE IF NOT EXISTS pojazdy (
 
 -- Tabela WYPOŻYCZENIA
 CREATE TABLE IF NOT EXISTS wypozyczenia (
-    id_wypozyczenia   SERIAL PRIMARY KEY,
+    id   SERIAL PRIMARY KEY,
     id_pojazdu        INT,
     id_klienta        INT,
     id_pracownika     INT,
@@ -85,7 +86,7 @@ CREATE TABLE IF NOT EXISTS wypozyczenia (
 
 -- Tabela REZERWACJE
 CREATE TABLE IF NOT EXISTS rezerwacje (
-    id_rezerwacji     SERIAL PRIMARY KEY,
+    id     SERIAL PRIMARY KEY,
     id_pojazdu        INT,
     id_klienta        INT,
     id_pracownika     INT,
@@ -100,7 +101,7 @@ CREATE TABLE IF NOT EXISTS rezerwacje (
 
 -- Tabela PŁATNOŚCI
 CREATE TABLE IF NOT EXISTS platnosci (
-    id_platnosci      SERIAL PRIMARY KEY,
+    id      SERIAL PRIMARY KEY,
     id_wypozyczenia   INT,
     kwota             FLOAT NOT NULL,
     typ_platnosci     VARCHAR(20) CHECK (typ_platnosci IN ('gotowka', 'karta', 'przelew')),
@@ -111,7 +112,7 @@ CREATE TABLE IF NOT EXISTS platnosci (
 
 -- Tabela SERWIS
 CREATE TABLE IF NOT EXISTS serwis (
-    id_serwisu        SERIAL PRIMARY KEY,
+    id       SERIAL PRIMARY KEY,
     id_pojazdu        INT,
     data_serwisu      DATE NOT NULL,
     opis              TEXT NOT NULL,

@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from faker import Faker
 
 # Importy dla baz danych
-import mysql.connector
+import pymysql
 import psycopg2
 import gevent.monkey
 
@@ -16,14 +16,20 @@ from pymongo import MongoClient
 
 fake = Faker("pl_PL")  # używamy polskiej lokalizacji
 
-# Ilość rekordów do wygenerowania – możesz zmodyfikować ilości
-NUM_KLIENCI = 10
-NUM_PRACOWNICY = 5
-NUM_POJAZDY = 10
-NUM_WYPOZYCZENIA = 5
-NUM_REZERWACJE = 5
-NUM_PLATNOSCI = 5
-NUM_SERWIS = 5
+
+def configure(num_records):
+    global NUM_OF_RECORDS, NUM_KLIENCI, NUM_PRACOWNICY, NUM_POJAZDY
+    global NUM_WYPOZYCZENIA, NUM_REZERWACJE, NUM_PLATNOSCI, NUM_SERWIS
+
+    NUM_OF_RECORDS = num_records
+    NUM_KLIENCI = int(NUM_OF_RECORDS * 0.05)
+    NUM_PRACOWNICY = int(NUM_OF_RECORDS * 0.05)
+    NUM_POJAZDY = int(NUM_OF_RECORDS * 0.1)
+    NUM_WYPOZYCZENIA = int(NUM_OF_RECORDS * 0.3)
+    NUM_REZERWACJE = int(NUM_OF_RECORDS * 0.34)
+    NUM_PLATNOSCI = int(NUM_OF_RECORDS * 0.15)
+    NUM_SERWIS = int(NUM_OF_RECORDS * 0.01)
+    
 
 BODY_TYPES = ["sedan", "hatchback", "SUV", "coupe", "kombi"]
 GEARBOXES = ["manualna", "automatyczna"]
@@ -53,6 +59,7 @@ brand_to_models = {
 
 
 def generate_klienci():
+    global NUM_KLIENCI
     klienci = []
     for _ in range(NUM_KLIENCI):
         klient = {
@@ -74,12 +81,20 @@ def generate_klienci():
 
 def generate_pracownicy():
     pracownicy = []
+    global NUM_PRACOWNICY
     for _ in range(NUM_PRACOWNICY):
         pracownik = {
             "id_pracownika": str(uuid.uuid4()),
             "imie": fake.first_name(),
             "nazwisko": fake.last_name(),
             "telefon": fake.phone_number(),
+            "data_urodzenia": fake.date_of_birth(
+                minimum_age=18, maximum_age=80
+            ).isoformat(),
+            "pesel": "".join(str(random.randint(0, 9)) for _ in range(11)),
+            "adres": fake.street_address(),
+            "kod_pocztowy": fake.postcode(),
+            "miasto": fake.city(),
             "email": fake.email(),
         }
         pracownicy.append(pracownik)
@@ -119,6 +134,7 @@ def generate_pojazdy(modele):
     Marka zostanie przypisana dopiero w assign_marka_model, na podstawie id_modelu.
     """
     pojazdy = []
+    global NUM_POJAZDY
     for _ in range(NUM_POJAZDY):
         model = random.choice(modele)
         pojazd = {
@@ -143,6 +159,7 @@ def generate_pojazdy(modele):
 
 def generate_wypozyczenia(klienci, pojazdy, pracownicy):
     wypozyczenia = []
+    global NUM_WYPOZYCZENIA
     for _ in range(NUM_WYPOZYCZENIA):
         klient = random.choice(klienci)
         pojazd = random.choice(pojazdy)
@@ -180,6 +197,7 @@ def generate_wypozyczenia(klienci, pojazdy, pracownicy):
 
 def generate_rezerwacje(klienci, pojazdy, pracownicy):
     rezerwacje = []
+    global NUM_REZERWACJE
     for _ in range(NUM_REZERWACJE):
         klient = random.choice(klienci)
         pojazd = random.choice(pojazdy)
@@ -220,6 +238,7 @@ def generate_rezerwacje(klienci, pojazdy, pracownicy):
 
 def generate_platnosci(wypozyczenia):
     platnosci = []
+    global NUM_PLATNOSCI
     for _ in range(NUM_PLATNOSCI):
         wyp = random.choice(wypozyczenia)
         platnosc = {
@@ -250,6 +269,7 @@ def generate_platnosci(wypozyczenia):
 
 def generate_serwis(pojazdy):
     serwis = []
+    global NUM_SERWIS
     for _ in range(NUM_SERWIS):
         pojazd = random.choice(pojazdy)
         serwis_record = {
@@ -290,24 +310,26 @@ def assign_marka_model(pojazdy, modele, marki):
     return pojazdy
 
 
-# -------------------
-# Generowanie danych
-# -------------------
-klienci = generate_klienci()
-pracownicy = generate_pracownicy()
-typy_nadwozia = generate_typ_nadwozia()
 
-# Nowa funkcja zwracająca listę marek i listę modeli
-marki, modele = generate_marki_modele()
 
-pojazdy = generate_pojazdy(modele)
-# Uzupełniamy w słowniku pojazdu nazwę marki i model
-pojazdy = assign_marka_model(pojazdy, modele, marki)
+import time
+import csv
+import os
 
-wypozyczenia = generate_wypozyczenia(klienci, pojazdy, pracownicy)
-rezerwacje = generate_rezerwacje(klienci, pojazdy, pracownicy)
-platnosci = generate_platnosci(wypozyczenia)
-serwis = generate_serwis(pojazdy)
+INSERT_LOG_CSV = "insert_time.csv"
+
+def log_table_insert_time(label, start, end, num_records):
+    duration = end - start
+    file_exists = os.path.isfile(INSERT_LOG_CSV)
+    with open(INSERT_LOG_CSV, mode='a', newline='') as file:
+        writer = csv.writer(file)
+        if not file_exists:
+            writer.writerow(["Tabela", "Czas (s)", "Liczba rekordów"])
+        writer.writerow([label, f"{duration:.4f}", num_records])
+
+
+
+
 
 # ------------------------------------------------------
 # Funkcje do wstawiania danych do poszczególnych baz
@@ -316,15 +338,16 @@ serwis = generate_serwis(pojazdy)
 
 
 # ---- MySQL ----
-def populate_mysql():
+def populate_mysql(klienci, pracownicy, typy_nadwozia, marki, modele, pojazdy, wypozyczenia, rezerwacje, platnosci, serwis):
     print("Łączenie z bazą MySQL...")
-    conn = mysql.connector.connect(
+    conn = pymysql.connect(
         host="localhost",
         port=3306,
         user="user",
         password="password",
-        database="my_database",
+        database="my_database"
     )
+
     cursor = conn.cursor()
 
     # Tworzymy tabele
@@ -350,6 +373,11 @@ def populate_mysql():
           imie VARCHAR(50),
           nazwisko VARCHAR(50),
           telefon VARCHAR(20),
+          data_urodzenia DATE,
+          pesel BIGINT UNIQUE,
+          adres TEXT,
+          kod_pocztowy VARCHAR(10),
+          miasto TEXT,
           email VARCHAR(100)
         );
         """
@@ -475,6 +503,7 @@ def populate_mysql():
     )
 
     # Wstawianie danych
+    time_start = time.time()
     for klient in klienci:
         cursor.execute(
             """
@@ -496,14 +525,19 @@ def populate_mysql():
     for pracownik in pracownicy:
         cursor.execute(
             """
-            INSERT INTO pracownicy (id, imie, nazwisko, telefon, email)
-            VALUES (%s, %s, %s, %s, %s)
+            INSERT INTO pracownicy (id, imie, nazwisko, telefon, data_urodzenia, pesel, adres, kod_pocztowy, miasto, email)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 pracownik["id_pracownika"],
                 pracownik["imie"],
                 pracownik["nazwisko"],
                 pracownik["telefon"],
+                pracownik["data_urodzenia"],
+                pracownik["pesel"],
+                pracownik["adres"],
+                pracownik["kod_pocztowy"],
+                pracownik["miasto"],
                 pracownik["email"],
             ),
         )
@@ -665,13 +699,15 @@ def populate_mysql():
             ),
         )
     conn.commit()
+    time_end = time.time()
     cursor.close()
     conn.close()
+    log_table_insert_time("MySQL", time_start, time_end, NUM_OF_RECORDS)
     print("Dane zostały wstawione do MySQL.")
 
 
 # ---- PostgreSQL ----
-def populate_postgres():
+def populate_postgres(klienci, pracownicy, typy_nadwozia, marki, modele, pojazdy, wypozyczenia, rezerwacje, platnosci, serwis):
     print("Łączenie z bazą PostgreSQL...")
     conn = psycopg2.connect(
         host="localhost",
@@ -700,11 +736,16 @@ def populate_postgres():
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS pracownicy (
-          id VARCHAR(36) PRIMARY KEY,
-          imie VARCHAR(50),
-          nazwisko VARCHAR(50),
-          telefon VARCHAR(20),
-          email VARCHAR(100)
+             id VARCHAR(36) PRIMARY KEY,
+             imie VARCHAR(50) NOT NULL,
+             nazwisko VARCHAR(50) NOT NULL,
+             telefon VARCHAR(20),
+             data_urodzenia DATE,
+             pesel BIGINT UNIQUE,
+             adres TEXT,
+             kod_pocztowy VARCHAR(10),
+             miasto TEXT,
+             email VARCHAR(100)
         );
         """
     )
@@ -830,6 +871,7 @@ def populate_postgres():
     conn.commit()
 
     # Wstawianie danych – analogicznie do MySQL
+    time_start = time.time()
     for klient in klienci:
         cursor.execute(
             """
@@ -851,14 +893,19 @@ def populate_postgres():
     for pracownik in pracownicy:
         cursor.execute(
             """
-            INSERT INTO pracownicy (id, imie, nazwisko, telefon, email)
-            VALUES (%s, %s, %s, %s, %s)
+            INSERT INTO pracownicy (id, imie, nazwisko, telefon, data_urodzenia, pesel, adres, kod_pocztowy, miasto, email)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 pracownik["id_pracownika"],
                 pracownik["imie"],
                 pracownik["nazwisko"],
                 pracownik["telefon"],
+                pracownik["data_urodzenia"],
+                pracownik["pesel"],
+                pracownik["adres"],
+                pracownik["kod_pocztowy"],
+                pracownik["miasto"],
                 pracownik["email"],
             ),
         )
@@ -1019,13 +1066,15 @@ def populate_postgres():
             ),
         )
     conn.commit()
+    time_end = time.time()
     cursor.close()
     conn.close()
+    log_table_insert_time("PostgreSQL", time_start, time_end, NUM_OF_RECORDS)
     print("Dane zostały wstawione do PostgreSQL.")
 
 
 # ---- Cassandra ----
-def populate_cassandra():
+def populate_cassandra(klienci, pracownicy, typy_nadwozia, marki, modele, pojazdy, wypozyczenia, rezerwacje, platnosci, serwis):
     print("Łączenie z bazą Cassandra...")
     cluster = Cluster(["localhost"], port=9042, connection_class=GeventConnection)
     session = cluster.connect()
@@ -1049,7 +1098,8 @@ def populate_cassandra():
           pesel text,
           adres text,
           kod_pocztowy text,
-          miasto text
+          miasto text,
+          email text
         )
         """
     )
@@ -1060,6 +1110,11 @@ def populate_cassandra():
           imie text,
           nazwisko text,
           telefon text,
+          data_urodzenia date,
+          pesel text,
+          adres text,
+          kod_pocztowy text,
+          miasto text,
           email text
         )
         """
@@ -1180,6 +1235,7 @@ def populate_cassandra():
         return uuid.UUID(id_str)
 
     # Wstawianie danych
+    time_start = time.time()
     for klient in klienci:
         session.execute(
             """
@@ -1201,14 +1257,19 @@ def populate_cassandra():
     for pracownik in pracownicy:
         session.execute(
             """
-            INSERT INTO pracownicy (id, imie, nazwisko, telefon, email)
-            VALUES (%s, %s, %s, %s, %s)
+            INSERT INTO pracownicy (id, imie, nazwisko, telefon, data_urodzenia, pesel, adres, kod_pocztowy, miasto, email)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 uuid_from_str(pracownik["id_pracownika"]),
                 pracownik["imie"],
                 pracownik["nazwisko"],
                 pracownik["telefon"],
+                pracownik["data_urodzenia"],
+                pracownik["pesel"],
+                pracownik["adres"],
+                pracownik["kod_pocztowy"],
+                pracownik["miasto"],
                 pracownik["email"],
             ),
         )
@@ -1362,14 +1423,15 @@ def populate_cassandra():
                 srv["koszt"],
             ),
         )
-
+    time_end = time.time()
+    log_table_insert_time("Cassandra", time_start, time_end, NUM_OF_RECORDS)
     print("Dane zostały wstawione do Cassandry.")
     session.shutdown()
     cluster.shutdown()
 
 
 # ---- MongoDB ----
-def populate_mongo():
+def populate_mongo(klienci, pracownicy, typy_nadwozia, marki, modele, pojazdy, wypozyczenia, rezerwacje, platnosci, serwis):
     print("Łączenie z bazą MongoDB...")
     client = MongoClient("mongodb://user:password@localhost:27017/")
     db = client["wypozyczalnia"]
@@ -1386,6 +1448,7 @@ def populate_mongo():
         "platnosci": db.platnosci,
         "serwis": db.serwis,
     }
+    time_start = time.time()
     # Wstawianie dokumentów
     collections["klienci"].insert_many(klienci)
     collections["pracownicy"].insert_many(pracownicy)
@@ -1397,29 +1460,143 @@ def populate_mongo():
     collections["rezerwacje"].insert_many(rezerwacje)
     collections["platnosci"].insert_many(platnosci)
     collections["serwis"].insert_many(serwis)
-
+    time_end = time.time()
     client.close()
+    log_table_insert_time("MongoDB", time_start, time_end, NUM_OF_RECORDS)
     print("Dane zostały wstawione do MongoDB.")
+
+
+def drop_all_mysql():
+    print("Usuwanie tabel z MySQL...")
+    conn = pymysql.connect(
+        host="localhost",
+        port=3306,
+        user="user",
+        password="password",
+        database="my_database"
+    )
+    cursor = conn.cursor()
+    tables = [
+        "platnosci", "rezerwacje", "wypozyczenia", "pojazdy", "modele",
+        "marki", "typ_nadwozia", "pracownicy", "klienci", "serwis"
+    ]
+    for table in tables:
+        cursor.execute(f"DROP TABLE IF EXISTS {table};")
+    conn.commit()
+    cursor.close()
+    conn.close()
+    print("Tabele MySQL usunięte.")
+    
+def drop_all_postgres():
+    print("Usuwanie tabel z PostgreSQL...")
+    conn = psycopg2.connect(
+        host="localhost",
+        port=5432,
+        user="user",
+        password="password",
+        dbname="my_database"
+    )
+    cursor = conn.cursor()
+    tables = [
+        "platnosci", "rezerwacje", "wypozyczenia", "pojazdy", "modele",
+        "marki", "typ_nadwozia", "pracownicy", "klienci", "serwis"
+    ]
+    for table in tables:
+        cursor.execute(f"DROP TABLE IF EXISTS {table} CASCADE;")
+    conn.commit()
+    cursor.close()
+    conn.close()
+    print("Tabele PostgreSQL usunięte.")
+
+
+def drop_all_cassandra():
+    print("Usuwanie tabel z Cassandry...")
+    cluster = Cluster(["localhost"], port=9042, connection_class=GeventConnection)
+    session = cluster.connect()
+    session.set_keyspace("wypozyczalnia")
+    tables = [
+        "platnosci", "rezerwacje", "wypozyczenia", "pojazdy", "modele",
+        "marki", "typ_nadwozia", "pracownicy", "klienci", "serwis"
+    ]
+    for table in tables:
+        session.execute(f"DROP TABLE IF EXISTS {table};")
+    session.shutdown()
+    cluster.shutdown()
+    print("Tabele Cassandra usunięte.")
+
+
+def drop_all_mongo():
+    print("Usuwanie kolekcji z MongoDB...")
+    client = MongoClient("mongodb://user:password@localhost:27017/")
+    db = client["wypozyczalnia"]
+    collections = [
+        "platnosci", "rezerwacje", "wypozyczenia", "pojazdy", "modele",
+        "marki", "typ_nadwozia", "pracownicy", "klienci", "serwis"
+    ]
+    for col in collections:
+        db[col].drop()
+    client.close()
+    print("Kolekcje MongoDB usunięte.")
+
+
+def drop_all_databases():
+    try:
+        drop_all_mysql()
+    except Exception as e:
+        print("MySQL błąd:", e)
+    try:
+        drop_all_postgres()
+    except Exception as e:
+        print("PostgreSQL błąd:", e)
+    try:
+        drop_all_cassandra()
+    except Exception as e:
+        print("Cassandra błąd:", e)
+    try:
+        drop_all_mongo()
+    except Exception as e:
+        print("MongoDB błąd:", e)
 
 
 # -------------------
 # Funkcja główna
 # -------------------
-def main():
+def main(num_records=1000):
+    configure(num_records)
+    print(NUM_KLIENCI)
+    klienci = generate_klienci()
+    pracownicy = generate_pracownicy()
+    typy_nadwozia = generate_typ_nadwozia()
+
+    # Nowa funkcja zwracająca listę marek i listę modeli
+    marki, modele = generate_marki_modele()
+
+    pojazdy = generate_pojazdy(modele)
+    # Uzupełniamy w słowniku pojazdu nazwę marki i model
+    pojazdy = assign_marka_model(pojazdy, modele, marki)
+
+    wypozyczenia = generate_wypozyczenia(klienci, pojazdy, pracownicy)
+    rezerwacje = generate_rezerwacje(klienci, pojazdy, pracownicy)
+    platnosci = generate_platnosci(wypozyczenia)
+    serwis = generate_serwis(pojazdy)
     try:
-        populate_mysql()
+        drop_all_databases()
+    except Exception as e:
+        print("Błąd przy usuwaniu baz danych:", e)
+    try:
+        populate_mysql(klienci, pracownicy, typy_nadwozia, marki, modele, pojazdy, wypozyczenia, rezerwacje, platnosci, serwis)
     except Exception as e:
         print("Błąd przy wstawianiu do MySQL:", e)
     try:
-        populate_postgres()
+        populate_postgres(klienci, pracownicy, typy_nadwozia, marki, modele, pojazdy, wypozyczenia, rezerwacje, platnosci, serwis)
     except Exception as e:
         print("Błąd przy wstawianiu do PostgreSQL:", e)
     try:
-        populate_cassandra()
+        populate_cassandra(klienci, pracownicy, typy_nadwozia, marki, modele, pojazdy, wypozyczenia, rezerwacje, platnosci, serwis)
     except Exception as e:
         print("Błąd przy wstawianiu do Cassandry:", e)
     try:
-        populate_mongo()
+        populate_mongo(klienci, pracownicy, typy_nadwozia, marki, modele, pojazdy, wypozyczenia, rezerwacje, platnosci, serwis)
     except Exception as e:
         print("Błąd przy wstawianiu do MongoDB:", e)
 

@@ -56,7 +56,7 @@ db.modele.insertMany([
 
 db.klienci.insertMany([
     {
-        id_klienta: UUID(),
+        id: UUID(),
         imie: "Jan",
         nazwisko: "Kowalski",
         telefon: "123456789",
@@ -70,7 +70,7 @@ db.klienci.insertMany([
 
 db.pojazdy.insertMany([
     {
-        id_pojazdu: UUID(),
+        id: UUID(),
         id_modelu: (db.modele.findOne({ nazwa: "Corolla" }))._id,
         przebieg: 50000.0,
         rok_produkcji: 2020,
@@ -89,7 +89,7 @@ db.pojazdy.insertMany([
 
 db.wypozyczenia.insertMany([
     {
-        id_wypozyczenia: UUID(),
+        id: UUID(),
         klient: {
             id_klienta: UUID(),
             imie: "Jan",
@@ -117,7 +117,7 @@ db.wypozyczenia.insertMany([
 
 db.rezerwacje.insertMany([
     {
-        id_rezerwacji: UUID(),
+        id: UUID(),
         klient: {
             id_klienta: UUID(),
             imie: "Jan",
@@ -142,7 +142,7 @@ db.rezerwacje.insertMany([
 
 db.platnosci.insertMany([
     {
-        id_platnosci: UUID(),
+        id: UUID(),
         wypozyczenie: {
             id_wypozyczenia: UUID(),
             klient: { imie: "Jan", nazwisko: "Kowalski" },
@@ -159,7 +159,7 @@ db.platnosci.insertMany([
 
 db.serwis.insertMany([
     {
-        id_serwisu: UUID(),
+        id: UUID(),
         pojazd: {
             id_pojazdu: UUID(),
             marka: "Toyota",

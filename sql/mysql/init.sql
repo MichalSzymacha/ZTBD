@@ -3,7 +3,7 @@ USE wypozyczalnia;
 
 -- Tabela KLIENCI
 CREATE TABLE klienci (
-    id_klienta        INT PRIMARY KEY AUTO_INCREMENT,
+    id       INT PRIMARY KEY AUTO_INCREMENT,
     imie              VARCHAR(50) NOT NULL,
     nazwisko          VARCHAR(50) NOT NULL,
     telefon           VARCHAR(15),
@@ -16,7 +16,7 @@ CREATE TABLE klienci (
 
 -- Tabela PRACOWNICY
 CREATE TABLE pracownicy (
-    id_pracownika     INT PRIMARY KEY AUTO_INCREMENT,
+    id    INT PRIMARY KEY AUTO_INCREMENT,
     imie              VARCHAR(50) NOT NULL,
     nazwisko          VARCHAR(50) NOT NULL,
     telefon           VARCHAR(15),
@@ -24,12 +24,13 @@ CREATE TABLE pracownicy (
     pesel             BIGINT UNIQUE,
     adres             TEXT,
     kod_pocztowy      VARCHAR(10),
-    miasto            TEXT
+    miasto            TEXT,
+    email             VARCHAR(100) UNIQUE NOT NULL
 );
 
 -- Tabela TYP_NADWOZIA
 CREATE TABLE typ_nadwozia (
-    id_nadwozia       INT PRIMARY KEY AUTO_INCREMENT,
+    id      INT PRIMARY KEY AUTO_INCREMENT,
     rodzaj_nadwozia   TEXT NOT NULL
 );
 
@@ -41,7 +42,7 @@ CREATE TABLE marki (
 
 -- Tabela MODELE
 CREATE TABLE modele (
-    id_modelu INT PRIMARY KEY AUTO_INCREMENT,
+    id INT PRIMARY KEY AUTO_INCREMENT,
     id_marki INT NOT NULL,
     nazwa VARCHAR(50) NOT NULL,
     FOREIGN KEY (id_marki) REFERENCES marki(id_marki) ON DELETE CASCADE
@@ -49,7 +50,7 @@ CREATE TABLE modele (
 
 -- Tabela POJAZDY
 CREATE TABLE pojazdy (
-    id_pojazdu        INT PRIMARY KEY AUTO_INCREMENT,
+    id        INT PRIMARY KEY AUTO_INCREMENT,
     id_modelu         INT NOT NULL,
     przebieg          FLOAT,
     rok_produkcji     YEAR,
@@ -70,7 +71,7 @@ CREATE TABLE pojazdy (
 
 -- Tabela WYPOŻYCZENIA
 CREATE TABLE wypozyczenia (
-    id_wypozyczenia   INT PRIMARY KEY AUTO_INCREMENT,
+    id   INT PRIMARY KEY AUTO_INCREMENT,
     id_pojazdu        INT,
     id_klienta        INT,
     id_pracownika     INT,
