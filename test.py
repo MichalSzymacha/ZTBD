@@ -19,6 +19,7 @@ def write_result(label, duration):
             writer.writerow(["Operacja", "Czas (s)"])
         writer.writerow([label, f"{duration:.4f}"])
 
+
 def log_time(label):
     def decorator(func):
         def wrapper(*args, **kwargs):
@@ -86,17 +87,31 @@ def mysql_queries(num_inserts):
                 (nazwisko,)
             )
 
+    @log_time("MySQL UPDATE")
+    def update():
+        # Aktualizacja telefonu dla rekordów pozostawionych
+        cursor.execute(
+            """
+            UPDATE klienci
+            SET telefon = '987654321'
+            WHERE nazwisko = 'Zostaw'
+            """
+        )
+
     @log_time("MySQL DELETE")
     def delete():
-        cursor.execute("""
+        cursor.execute(
+            """
             DELETE FROM klienci
             WHERE nazwisko = 'DoUsuniecia'
-        """)
+            """
+        )
 
     group_by_1()
     group_by_2()
     group_by_3()
     insert()
+    update()
     delete()
 
     conn.commit()
@@ -157,6 +172,17 @@ def postgres_queries(num_inserts):
                 (nazwisko,)
             )
 
+    @log_time("PostgreSQL UPDATE")
+    def update():
+        # Aktualizacja kodu pocztowego dla klientów pozostawionych
+        cursor.execute(
+            """
+            UPDATE klienci
+            SET kod_pocztowy = '99-999'
+            WHERE nazwisko = 'Zostaw'
+            """
+        )
+
     @log_time("PostgreSQL DELETE")
     def delete():
         cursor.execute("""
@@ -168,6 +194,7 @@ def postgres_queries(num_inserts):
     group_by_2()
     group_by_3()
     insert()
+    update()
     delete()
 
     conn.commit()
@@ -212,6 +239,15 @@ def cassandra_queries(num_inserts):
             if nazwisko == 'DoUsuniecia':
                 ids_to_delete.append(id_)
 
+    @log_time("Cassandra UPDATE")
+    def update():
+        # Aktualizacja adresu dla wstawionych rekordów
+        for id_ in ids_to_delete:
+            session.execute(
+                "UPDATE klienci SET adres = 'Nowa 2' WHERE id = %s",
+                (id_,)
+            )
+
     @log_time("Cassandra DELETE")
     def delete():
         for id_ in ids_to_delete:
@@ -221,11 +257,11 @@ def cassandra_queries(num_inserts):
     select_2()
     select_3()
     insert()
+    update()
     delete()
 
     session.shutdown()
     cluster.shutdown()
-
 
 # ------------------ MongoDB ------------------
 def mongo_queries(num_inserts):
@@ -268,6 +304,14 @@ def mongo_queries(num_inserts):
                 "miasto": "Testowo"
             })
 
+    @log_time("MongoDB UPDATE")
+    def update():
+        # Zmiana miasta dla dokumentów pozostawionych
+        db.klienci.update_many(
+            {"nazwisko": "Zostaw"},
+            {"$set": {"miasto": "ZmienioneMiasto"}}
+        )
+
     @log_time("MongoDB DELETE")
     def delete():
         db.klienci.delete_many({"nazwisko": "DoUsuniecia"})
@@ -276,6 +320,7 @@ def mongo_queries(num_inserts):
     agg_2()
     agg_3()
     insert()
+    update()
     delete()
     client.close()
 
